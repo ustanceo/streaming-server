@@ -14,7 +14,7 @@ const PLATFORMS = {
   instagram: process.env.INSTAGRAM_STREAM_KEY || ''
 };
 
-// RTMP Server konfigürasyonu
+// Temel RTMP Server konfigürasyonu
 const config = {
   rtmp: {
     port: 1935,
@@ -30,45 +30,67 @@ const config = {
   }
 };
 
-// Eğer platform key'leri varsa relay ekle
-if (Object.values(PLATFORMS).some(key => key.length > 0)) {
+// Platform key'leri kontrolü ve relay konfigürasyonu
+const activePlatforms = Object.entries(PLATFORMS).filter(([platform, key]) => key && key.length > 0);
+
+if (activePlatforms.length > 0) {
+  // FFmpeg path'lerini dene
+  const possibleFFmpegPaths = [
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    'ffmpeg'
+  ];
+  
   config.relay = {
-    ffmpeg: '/usr/bin/ffmpeg',
+    ffmpeg: possibleFFmpegPaths[0], // İlk path'i dene
     tasks: []
   };
   
-  if (PLATFORMS.youtube) {
-    config.relay.tasks.push({
-      app: 'live',
-      mode: 'push',
-      edge: `rtmp://a.rtmp.youtube.com/live2/${PLATFORMS.youtube}`
-    });
-  }
-  
-  if (PLATFORMS.facebook) {
-    config.relay.tasks.push({
-      app: 'live',
-      mode: 'push',
-      edge: `rtmp://live-api-s.facebook.com:80/rtmp/${PLATFORMS.facebook}`
-    });
-  }
-  
-  if (PLATFORMS.twitch) {
-    config.relay.tasks.push({
-      app: 'live',
-      mode: 'push',
-      edge: `rtmp://ingest.twitch.tv/live/${PLATFORMS.twitch}`
-    });
-  }
+  // Aktif platformlar için relay task'ları ekle
+  activePlatforms.forEach(([platform, key]) => {
+    switch(platform) {
+      case 'youtube':
+        config.relay.tasks.push({
+          app: 'live',
+          mode: 'push',
+          edge: `rtmp://a.rtmp.youtube.com/live2/${key}`
+        });
+        break;
+      case 'facebook':
+        config.relay.tasks.push({
+          app: 'live',
+          mode: 'push',
+          edge: `rtmp://live-api-s.facebook.com:80/rtmp/${key}`
+        });
+        break;
+      case 'twitch':
+        config.relay.tasks.push({
+          app: 'live',
+          mode: 'push',
+          edge: `rtmp://ingest.twitch.tv/live/${key}`
+        });
+        break;
+      case 'instagram':
+        config.relay.tasks.push({
+          app: 'live',
+          mode: 'push',
+          edge: `rtmp://live-upload.instagram.com/rtmp/${key}`
+        });
+        break;
+    }
+  });
 }
 
 const nms = new NodeMediaServer(config);
 
+// Hata yakalama
+nms.on('error', (err) => {
+  console.log('❌ [HATA]', err.message);
+});
+
 // Web arayüzü
 app.get('/', (req, res) => {
-  const connectedPlatforms = Object.entries(PLATFORMS)
-    .filter(([platform, key]) => key.length > 0)
-    .map(([platform]) => platform);
+  const connectedPlatforms = activePlatforms.map(([platform]) => platform);
   
   res.send(`
     <!DOCTYPE html>
@@ -94,6 +116,10 @@ app.get('/', (req, res) => {
             .warning-card { 
                 background: rgba(255,193,7,0.2); padding: 20px; border-radius: 15px;
                 margin: 15px 0; border-left: 4px solid #FFC107;
+            }
+            .error-card { 
+                background: rgba(244,67,54,0.2); padding: 20px; border-radius: 15px;
+                margin: 15px 0; border-left: 4px solid #f44336;
             }
             .platform-list {
                 display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -126,6 +152,7 @@ app.get('/', (req, res) => {
             .stat-number { font-size: 24px; font-weight: bold; color: #4CAF50; }
             h1 { text-align: center; margin-bottom: 30px; font-size: 2.5em; }
             h2 { color: #FFD700; margin-top: 30px; }
+            code { background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 4px; }
         </style>
     </head>
     <body>
@@ -146,7 +173,7 @@ app.get('/', (req, res) => {
                    <button class="copy-btn" onclick="copyToClipboard('test')">Kopyala</button></p>
             </div>
             
-            <h2>🎯 Bağlı Platformlar</h2>
+            <h2>🎯 Platform Durumu</h2>
             <div class="platform-list">
                 <div class="platform ${connectedPlatforms.includes('youtube') ? 'connected' : 'disconnected'}">
                     <h4>📺 YouTube Live</h4>
@@ -169,13 +196,14 @@ app.get('/', (req, res) => {
             ${connectedPlatforms.length === 0 ? `
             <div class="warning-card">
                 <h3>⚠️ Platform Key'leri Ayarlanmamış</h3>
-                <p>Çoklu platform yayını için Render.com dashboard'unda Environment Variables'ları ayarlamanız gerekiyor.</p>
+                <p>Çoklu platform yayını için Render.com dashboard'unda Environment Variables'ları ayarlamanız gerekiyor:</p>
                 <ul>
-                    <li>YOUTUBE_STREAM_KEY</li>
-                    <li>FACEBOOK_STREAM_KEY</li>
-                    <li>TWITCH_STREAM_KEY</li>
-                    <li>INSTAGRAM_STREAM_KEY</li>
+                    <li><code>YOUTUBE_STREAM_KEY</code></li>
+                    <li><code>FACEBOOK_STREAM_KEY</code></li>
+                    <li><code>TWITCH_STREAM_KEY</code></li>
+                    <li><code>INSTAGRAM_STREAM_KEY</code></li>
                 </ul>
+                <p>⚡ Şu anda sadece RTMP server çalışıyor. Platform key'leri ekledikten sonra otomatik relay başlayacak.</p>
             </div>
             ` : ''}
             
@@ -197,26 +225,45 @@ app.get('/', (req, res) => {
             
             <h2>📱 Telefon Uygulaması Ayarları</h2>
             <div class="rtmp-info">
-                <h4>Önerilen Uygulamalar:</h4>
+                <h4>📲 Önerilen Uygulamalar:</h4>
                 <ul>
-                    <li><strong>Android:</strong> Larix Broadcaster, CameraFi Live</li>
-                    <li><strong>iOS:</strong> Larix Broadcaster, Live:Air Action Cam</li>
+                    <li><strong>Android:</strong> Larix Broadcaster, CameraFi Live, Simple RTMP Pusher</li>
+                    <li><strong>iOS:</strong> Larix Broadcaster, Live:Air Action Cam, Broadcaster</li>
                 </ul>
                 
-                <h4>Önerilen Ayarlar:</h4>
+                <h4>⚙️ Önerilen Ayarlar:</h4>
                 <ul>
-                    <li><strong>Video Bitrate:</strong> 2500 kbps</li>
+                    <li><strong>Video Bitrate:</strong> 2000-3000 kbps</li>
                     <li><strong>Audio Bitrate:</strong> 128 kbps</li>
                     <li><strong>Resolution:</strong> 1280x720 (720p)</li>
                     <li><strong>FPS:</strong> 30</li>
                     <li><strong>Keyframe Interval:</strong> 2 saniye</li>
                 </ul>
             </div>
+            
+            <h2>🔧 Test Etmek İçin</h2>
+            <div class="rtmp-info">
+                <p>1. Telefon uygulamanızı açın</p>
+                <p>2. RTMP ayarlarına gidin</p>
+                <p>3. Server URL: <code>rtmp://${req.get('host')}:1935/live</code></p>
+                <p>4. Stream Key: <code>test</code></p>
+                <p>5. Yayını başlatın</p>
+                <p>6. Bu sayfayı yenileyin ve istatistikleri kontrol edin</p>
+            </div>
         </div>
         
         <script>
             function copyToClipboard(text) {
                 navigator.clipboard.writeText(text).then(() => {
+                    alert('Kopyalandı: ' + text);
+                }).catch(() => {
+                    // Fallback for older browsers
+                    const textArea = document.createElement('textarea');
+                    textArea.value = text;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
                     alert('Kopyalandı: ' + text);
                 });
             }
@@ -228,14 +275,16 @@ app.get('/', (req, res) => {
                 document.getElementById('uptime').textContent = uptime;
             }, 60000);
             
-            // Aktif stream sayısını kontrol et (basit simülasyon)
+            // Aktif stream sayısını kontrol et
             setInterval(() => {
                 fetch('/api/stats')
                     .then(response => response.json())
                     .then(data => {
                         document.getElementById('activeStreams').textContent = data.activeStreams || 0;
                     })
-                    .catch(() => {});
+                    .catch(() => {
+                        // Hata durumunda sessizce geç
+                    });
             }, 5000);
         </script>
     </body>
@@ -245,42 +294,75 @@ app.get('/', (req, res) => {
 
 // API endpoint for stats
 app.get('/api/stats', (req, res) => {
-  res.json({
-    activeStreams: nms.getSession() ? Object.keys(nms.getSession()).length : 0,
-    connectedPlatforms: Object.values(PLATFORMS).filter(key => key.length > 0).length
-  });
+  try {
+    // Node Media Server session bilgisini al
+    const sessions = nms.getSession();
+    const activeStreams = sessions ? Object.keys(sessions).length : 0;
+    
+    res.json({
+      activeStreams: activeStreams,
+      connectedPlatforms: activePlatforms.length,
+      activePlatformsList: activePlatforms.map(([platform]) => platform)
+    });
+  } catch (error) {
+    res.json({
+      activeStreams: 0,
+      connectedPlatforms: activePlatforms.length,
+      activePlatformsList: activePlatforms.map(([platform]) => platform)
+    });
+  }
 });
 
 // Stream olaylarını dinle
 nms.on('preConnect', (id, args) => {
-  console.log('[📡 Bağlantı]', `ID: ${id}`);
+  console.log('[📡 Bağlantı Girişimi]', `ID: ${id}`);
 });
 
 nms.on('postConnect', (id, args) => {
-  console.log('[✅ Bağlandı]', `ID: ${id}`);
+  console.log('[✅ Bağlantı Başarılı]', `ID: ${id}`);
 });
 
 nms.on('prePublish', (id, StreamPath, args) => {
-  console.log('[📤 Yayın Hazırlanıyor]', `Path: ${StreamPath}`);
+  console.log('[📤 Yayın Hazırlanıyor]', `Path: ${StreamPath}, ID: ${id}`);
 });
 
 nms.on('postPublish', (id, StreamPath, args) => {
-  console.log('🔴 [YAYIN BAŞLADI!]', `Path: ${StreamPath}`);
-  console.log(`📺 Yayın ${Object.values(PLATFORMS).filter(key => key.length > 0).length} platformda aktif!`);
+  console.log('🔴 [YAYIN BAŞLADI!]', `Path: ${StreamPath}, ID: ${id}`);
+  if (activePlatforms.length > 0) {
+    console.log(`📺 Yayın ${activePlatforms.length} platformda relay ediliyor!`);
+    activePlatforms.forEach(([platform]) => {
+      console.log(`  └─ ${platform}: Aktif`);
+    });
+  } else {
+    console.log('📺 Sadece RTMP server aktif (Platform key\'leri ayarlanmamış)');
+  }
 });
 
 nms.on('donePublish', (id, StreamPath, args) => {
-  console.log('⏹️ [YAYIN BİTTİ]', `Path: ${StreamPath}`);
+  console.log('⏹️ [YAYIN BİTTİ]', `Path: ${StreamPath}, ID: ${id}`);
+});
+
+nms.on('doneConnect', (id, args) => {
+  console.log('[👋 Bağlantı Kesildi]', `ID: ${id}`);
 });
 
 // Server başlatma
 const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log('🌐 Web Server:', `http://0.0.0.0:${PORT}`);
   console.log('📡 RTMP Server başlatılıyor...');
+  console.log('🎯 Aktif Platformlar:', activePlatforms.length > 0 ? activePlatforms.map(([p]) => p).join(', ') : 'Henüz ayarlanmamış');
 });
 
-nms.run();
-console.log('🚀 Çoklu Platform Streaming Server aktif!');
-console.log('📡 RTMP Port: 1935');
-console.log('🌐 HTTP Port:', PORT);
+// Node Media Server başlat
+try {
+  nms.run();
+  console.log('🚀 Çoklu Platform Streaming Server aktif!');
+  console.log('📡 RTMP Port: 1935');
+  console.log('🌐 HTTP Port:', PORT);
+  console.log('📋 RTMP URL: rtmp://streaming-server-truf.onrender.com:1935/live');
+  console.log('🔑 Stream Key: test');
+} catch (error) {
+  console.error('❌ Server başlatma hatası:', error.message);
+}
